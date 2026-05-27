@@ -13,6 +13,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 
 import nodomain.freeyourgadget.gadgetbridge.database.DBOpenHelper;
+import nodomain.freeyourgadget.gadgetbridge.database.HuaweiToXiaomiSyncer;
 import nodomain.freeyourgadget.gadgetbridge.entities.DaoMaster;
 import nodomain.freeyourgadget.gadgetbridge.entities.DaoSession;
 import nodomain.freeyourgadget.gadgetbridge.util.FileUtils;
@@ -94,6 +95,9 @@ public class GBDatabase {
 
     void exportDB(final File destFile) throws IllegalStateException, IOException {
         try {
+            // 在关闭/复制数据库前，把 HUAWEI_* 数据同步到 XIAOMI_* 表，
+            // 这样导出的 db 文件能被橘瓣 (orangechat) 直接读取。
+            HuaweiToXiaomiSyncer.syncIfNeeded(daoMaster.getDatabase());
             final String dbPath = getClosedDBPath();
             final File sourceFile = new File(dbPath);
             FileUtils.copyFile(sourceFile, destFile);
@@ -101,9 +105,11 @@ public class GBDatabase {
             setupDatabase(GBApplication.app());
         }
     }
-
     void exportDB(final OutputStream dest) throws IOException {
         try {
+            // 在关闭/复制数据库前，把 HUAWEI_* 数据同步到 XIAOMI_* 表，
+            // 这样导出的 db 文件能被橘瓣 (orangechat) 直接读取。
+            HuaweiToXiaomiSyncer.syncIfNeeded(daoMaster.getDatabase());
             final String dbPath = getClosedDBPath();
             final File source = new File(dbPath);
             FileUtils.copyFileToStream(source, dest);
