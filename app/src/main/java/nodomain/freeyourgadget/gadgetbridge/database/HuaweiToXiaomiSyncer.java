@@ -127,21 +127,31 @@ public class HuaweiToXiaomiSyncer {
                 "HAVING MAX(CASE WHEN HEART_RATE BETWEEN 1 AND 250 THEN HEART_RATE END) > 0 " +
                 "    OR MAX(STEPS) > 0");
         // 第二步：用 HUAWEI_STRESS_SAMPLE 的真实压力值回填
-        // STRESS 表时间戳是毫秒，ACTIVITY 表是秒，用 TIMESTAMP/1000 匹配最近 5 分钟内的行
+        // GreenDAO 表是 WITHOUT ROWID，不能在 UPDATE 子查询里直接引用外层列，
+        // 所以先建临时表做 JOIN，再用 TIMESTAMP+DEVICE_ID 匹配回填。
+        // STRESS 表时间戳是毫秒，ACTIVITY 表是秒，匹配最近 5 分钟内的行。
         if (tableExists(db, "HUAWEI_STRESS_SAMPLE")) {
-            db.execSQL(
-                    "UPDATE XIAOMI_ACTIVITY_SAMPLE SET STRESS = (" +
-                    "  SELECT s.STRESS FROM HUAWEI_STRESS_SAMPLE s " +
-                    "  WHERE ABS(XIAOMI_ACTIVITY_SAMPLE.TIMESTAMP - s.TIMESTAMP/1000) <= 300 " +
-                    "    AND s.STRESS BETWEEN 1 AND 100 " +
-                    "  ORDER BY ABS(XIAOMI_ACTIVITY_SAMPLE.TIMESTAMP - s.TIMESTAMP/1000) ASC " +
-                    "  LIMIT 1" +
-                    ") WHERE EXISTS (" +
-                    "  SELECT 1 FROM HUAWEI_STRESS_SAMPLE s " +
-                    "  WHERE ABS(XIAOMI_ACTIVITY_SAMPLE.TIMESTAMP - s.TIMESTAMP/1000) <= 300 " +
-                    "    AND s.STRESS BETWEEN 1 AND 100" +
-                    ")");
-            LOG.info("Backfilled real stress values from HUAWEI_STRESS_SAMPLE");
+            try {
+                db.execSQL("DROP TABLE IF EXISTS _tmp_stress_map");
+                db.execSQL(
+                        "CREATE TEMP TABLE _tmp_stress_map AS " +
+                        "SELECT x.TIMESTAMP AS ts, x.DEVICE_ID AS did, s.STRESS AS real_stress " +
+                        "FROM XIAOMI_ACTIVITY_SAMPLE x " +
+                        "INNER JOIN HUAWEI_STRESS_SAMPLE s " +
+                        "  ON ABS(x.TIMESTAMP - CAST(s.TIMESTAMP/1000 AS INTEGER)) <= 300 " +
+                        "  AND s.STRESS BETWEEN 1 AND 100");
+                db.execSQL(
+                        "UPDATE XIAOMI_ACTIVITY_SAMPLE SET STRESS = (" +
+                        "  SELECT real_stress FROM _tmp_stress_map " +
+                        "  WHERE _tmp_stress_map.ts = XIAOMI_ACTIVITY_SAMPLE.TIMESTAMP " +
+                        "    AND _tmp_stress_map.did = XIAOMI_ACTIVITY_SAMPLE.DEVICE_ID " +
+                        "  LIMIT 1" +
+                        ") WHERE TIMESTAMP IN (SELECT ts FROM _tmp_stress_map)");
+                db.execSQL("DROP TABLE IF EXISTS _tmp_stress_map");
+                LOG.info("Backfilled real stress values from HUAWEI_STRESS_SAMPLE");
+            } catch (final Throwable t) {
+                LOG.warn("Stress backfill failed (non-fatal)", t);
+            }
         }
     }
 
