@@ -106,6 +106,7 @@ public class HuaweiToXiaomiSyncer {
     private static void syncActivity(final SQLiteDatabase db) {
         if (!tableExists(db, "HUAWEI_ACTIVITY_SAMPLE")) return;
         db.execSQL("DELETE FROM XIAOMI_ACTIVITY_SAMPLE");
+        // 第一步：插入活动数据，STRESS 先用占位值 1（有心率时）
         db.execSQL(
                 "INSERT INTO XIAOMI_ACTIVITY_SAMPLE " +
                 "  (TIMESTAMP, DEVICE_ID, USER_ID, RAW_INTENSITY, STEPS, RAW_KIND, " +
@@ -125,6 +126,23 @@ public class HuaweiToXiaomiSyncer {
                 "GROUP BY TIMESTAMP, DEVICE_ID " +
                 "HAVING MAX(CASE WHEN HEART_RATE BETWEEN 1 AND 250 THEN HEART_RATE END) > 0 " +
                 "    OR MAX(STEPS) > 0");
+        // 第二步：用 HUAWEI_STRESS_SAMPLE 的真实压力值回填
+        // STRESS 表时间戳是毫秒，ACTIVITY 表是秒，用 TIMESTAMP/1000 匹配最近 5 分钟内的行
+        if (tableExists(db, "HUAWEI_STRESS_SAMPLE")) {
+            db.execSQL(
+                    "UPDATE XIAOMI_ACTIVITY_SAMPLE SET STRESS = (" +
+                    "  SELECT s.STRESS FROM HUAWEI_STRESS_SAMPLE s " +
+                    "  WHERE ABS(XIAOMI_ACTIVITY_SAMPLE.TIMESTAMP - s.TIMESTAMP/1000) <= 300 " +
+                    "    AND s.STRESS BETWEEN 1 AND 100 " +
+                    "  ORDER BY ABS(XIAOMI_ACTIVITY_SAMPLE.TIMESTAMP - s.TIMESTAMP/1000) ASC " +
+                    "  LIMIT 1" +
+                    ") WHERE EXISTS (" +
+                    "  SELECT 1 FROM HUAWEI_STRESS_SAMPLE s " +
+                    "  WHERE ABS(XIAOMI_ACTIVITY_SAMPLE.TIMESTAMP - s.TIMESTAMP/1000) <= 300 " +
+                    "    AND s.STRESS BETWEEN 1 AND 100" +
+                    ")");
+            LOG.info("Backfilled real stress values from HUAWEI_STRESS_SAMPLE");
+        }
     }
 
     private static void syncSleepTime(final SQLiteDatabase db) {
@@ -157,22 +175,35 @@ public class HuaweiToXiaomiSyncer {
     private static void syncDailySummary(final SQLiteDatabase db) {
         if (!tableExists(db, "HUAWEI_ACTIVITY_SAMPLE")) return;
         db.execSQL("DELETE FROM XIAOMI_DAILY_SUMMARY_SAMPLE");
+        // STRESS_AVG: 从 HUAWEI_STRESS_SAMPLE 按天计算平均值，没有则填 1（占位）
+        final String stressAvgExpr;
+        if (tableExists(db, "HUAWEI_STRESS_SAMPLE")) {
+            stressAvgExpr =
+                    "COALESCE((SELECT CAST(AVG(s.STRESS) AS INTEGER) " +
+                    "  FROM HUAWEI_STRESS_SAMPLE s " +
+                    "  WHERE s.STRESS BETWEEN 1 AND 100 " +
+                    "    AND s.TIMESTAMP/1000 >= (strftime('%s', date(a.TIMESTAMP+28800,'unixepoch'))-28800) " +
+                    "    AND s.TIMESTAMP/1000 < (strftime('%s', date(a.TIMESTAMP+28800,'unixepoch'))-28800)+86400" +
+                    "), 1)";
+        } else {
+            stressAvgExpr = "1";
+        }
         db.execSQL(
                 "INSERT INTO XIAOMI_DAILY_SUMMARY_SAMPLE " +
                 "  (TIMESTAMP, DEVICE_ID, USER_ID, TIMEZONE, STEPS, " +
                 "   HR_RESTING, HR_MAX, HR_MIN, HR_AVG, STRESS_AVG, CALORIES, SPO2_AVG) " +
                 "SELECT " +
-                "  (strftime('%s', date(TIMESTAMP+28800,'unixepoch'))-28800)*1000 AS day_ms, " +
-                "  DEVICE_ID, MIN(USER_ID), 28800, " +
-                "  SUM(CASE WHEN STEPS>0 THEN STEPS ELSE 0 END), " +
-                "  MAX(CASE WHEN RESTING_HEART_RATE BETWEEN 30 AND 200 THEN RESTING_HEART_RATE END), " +
-                "  MAX(CASE WHEN HEART_RATE BETWEEN 30 AND 220 THEN HEART_RATE END), " +
-                "  MIN(CASE WHEN HEART_RATE BETWEEN 30 AND 220 THEN HEART_RATE END), " +
-                "  CAST(AVG(CASE WHEN HEART_RATE BETWEEN 30 AND 220 THEN HEART_RATE END) AS INTEGER), " +
-                "  1, " +
-                "  SUM(CASE WHEN CALORIES>0 THEN CALORIES ELSE 0 END), " +
-                "  CAST(AVG(CASE WHEN SPO BETWEEN 1 AND 100 THEN SPO END) AS INTEGER) " +
-                "FROM HUAWEI_ACTIVITY_SAMPLE " +
-                "GROUP BY day_ms, DEVICE_ID");
+                "  (strftime('%s', date(a.TIMESTAMP+28800,'unixepoch'))-28800)*1000 AS day_ms, " +
+                "  a.DEVICE_ID, MIN(a.USER_ID), 28800, " +
+                "  SUM(CASE WHEN a.STEPS>0 THEN a.STEPS ELSE 0 END), " +
+                "  MAX(CASE WHEN a.RESTING_HEART_RATE BETWEEN 30 AND 200 THEN a.RESTING_HEART_RATE END), " +
+                "  MAX(CASE WHEN a.HEART_RATE BETWEEN 30 AND 220 THEN a.HEART_RATE END), " +
+                "  MIN(CASE WHEN a.HEART_RATE BETWEEN 30 AND 220 THEN a.HEART_RATE END), " +
+                "  CAST(AVG(CASE WHEN a.HEART_RATE BETWEEN 30 AND 220 THEN a.HEART_RATE END) AS INTEGER), " +
+                "  " + stressAvgExpr + ", " +
+                "  SUM(CASE WHEN a.CALORIES>0 THEN a.CALORIES ELSE 0 END), " +
+                "  CAST(AVG(CASE WHEN a.SPO BETWEEN 1 AND 100 THEN a.SPO END) AS INTEGER) " +
+                "FROM HUAWEI_ACTIVITY_SAMPLE a " +
+                "GROUP BY day_ms, a.DEVICE_ID");
     }
 }
