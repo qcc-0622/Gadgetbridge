@@ -17,8 +17,11 @@ import org.slf4j.LoggerFactory;
  *   HUAWEI 3 DEEP_SLEEP     -> XIAOMI 3
  *   HUAWEI 4 AWAKE          -> XIAOMI 5
  *
- * 注意：橘瓣查心率时使用 STRESS > 0 作为过滤条件，华为设备没有压力数据，
- * 因此同步时需要给 STRESS 填充占位值(1)，否则心率数据会被橘瓣全部过滤掉。
+ * 兼容橘瓣的两个 workaround：
+ * 1. STRESS 占位值：橘瓣部分查询用 STRESS > 0 过滤，华为没有压力数据，
+ *    同步时对有心率的行填 STRESS=1。
+ * 2. 过滤空行：橘瓣取心率用 ORDER BY TIMESTAMP DESC LIMIT 1（只取最新一行），
+ *    如果最新行心率为 0 就显示无数据。同步时只保留有心率或有步数的行。
  *
  * 这是幂等操作 - 每次导出前都会用最新 HUAWEI 数据完整重写 XIAOMI 表。
  * 同步失败不会让导出本身失败，只会记录日志。
@@ -119,7 +122,9 @@ public class HuaweiToXiaomiSyncer {
                 "  COALESCE(MAX(CALORIES), 0), " +
                 "  COALESCE(MAX(CALORIES), 0) " +
                 "FROM HUAWEI_ACTIVITY_SAMPLE " +
-                "GROUP BY TIMESTAMP, DEVICE_ID");
+                "GROUP BY TIMESTAMP, DEVICE_ID " +
+                "HAVING MAX(CASE WHEN HEART_RATE BETWEEN 1 AND 250 THEN HEART_RATE END) > 0 " +
+                "    OR MAX(STEPS) > 0");
     }
 
     private static void syncSleepTime(final SQLiteDatabase db) {
