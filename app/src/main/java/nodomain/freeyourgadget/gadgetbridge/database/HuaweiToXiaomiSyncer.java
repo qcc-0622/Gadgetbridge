@@ -17,6 +17,9 @@ import org.slf4j.LoggerFactory;
  *   HUAWEI 3 DEEP_SLEEP     -> XIAOMI 3
  *   HUAWEI 4 AWAKE          -> XIAOMI 5
  *
+ * 注意：橘瓣查心率时使用 STRESS > 0 作为过滤条件，华为设备没有压力数据，
+ * 因此同步时需要给 STRESS 填充占位值(1)，否则心率数据会被橘瓣全部过滤掉。
+ *
  * 这是幂等操作 - 每次导出前都会用最新 HUAWEI 数据完整重写 XIAOMI 表。
  * 同步失败不会让导出本身失败，只会记录日志。
  */
@@ -110,7 +113,7 @@ public class HuaweiToXiaomiSyncer {
                 "  COALESCE(MAX(STEPS), 0), " +
                 "  COALESCE(MAX(RAW_KIND), -1), " +
                 "  COALESCE(MAX(CASE WHEN HEART_RATE BETWEEN 1 AND 250 THEN HEART_RATE END), 0), " +
-                "  NULL, " +
+                "  CASE WHEN MAX(CASE WHEN HEART_RATE BETWEEN 1 AND 250 THEN HEART_RATE END) IS NOT NULL THEN 1 ELSE NULL END, " +
                 "  MAX(CASE WHEN SPO BETWEEN 1 AND 100 THEN SPO END), " +
                 "  COALESCE(MAX(DISTANCE)*100, 0), " +
                 "  COALESCE(MAX(CALORIES), 0), " +
@@ -161,7 +164,7 @@ public class HuaweiToXiaomiSyncer {
                 "  MAX(CASE WHEN HEART_RATE BETWEEN 30 AND 220 THEN HEART_RATE END), " +
                 "  MIN(CASE WHEN HEART_RATE BETWEEN 30 AND 220 THEN HEART_RATE END), " +
                 "  CAST(AVG(CASE WHEN HEART_RATE BETWEEN 30 AND 220 THEN HEART_RATE END) AS INTEGER), " +
-                "  NULL, " +
+                "  1, " +
                 "  SUM(CASE WHEN CALORIES>0 THEN CALORIES ELSE 0 END), " +
                 "  CAST(AVG(CASE WHEN SPO BETWEEN 1 AND 100 THEN SPO END) AS INTEGER) " +
                 "FROM HUAWEI_ACTIVITY_SAMPLE " +
